@@ -1,5 +1,5 @@
 {
-  "name": "voiceart-server",
+  "name": "voicecart-server",
   "private": true,
   "type": "module",
   "scripts": {

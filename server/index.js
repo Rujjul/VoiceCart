@@ -106,5 +106,5 @@ app.get("/api/suggestions", (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`VoiceArt API on http://localhost:${PORT}`);
+  console.log(`VoiceCart API on http://localhost:${PORT}`);
 });

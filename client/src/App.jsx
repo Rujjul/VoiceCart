@@ -168,7 +168,7 @@ export default function App() {
     <div className="page">
       <header className="header">
         <p className="eyebrow">Shopping list</p>
-        <h1>VoiceArt</h1>
+        <h1>VoiceCart</h1>
         <p className="lede">A quiet, voice-first list. Speak, search, or tap.</p>
       </header>
 

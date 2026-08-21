@@ -1,5 +1,5 @@
 {
-  "name": "voiceart",
+  "name": "voicecart",
   "private": true,
   "scripts": {
     "dev": "concurrently -n server,client -c teal,cyan \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
