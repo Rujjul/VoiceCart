@@ -1,6 +1,7 @@
+import { categoryOf } from "./categories.js";
+import { defaultUnit, isWeakUnit, normalizeUnit, UNIT_ALIASES } from "./units.js";
+
 const WORD_QTY = {
-  a: 1,
-  an: 1,
   one: 1,
   two: 2,
   three: 3,
@@ -21,50 +22,24 @@ const WORD_QTY = {
   eighteen: 18,
   nineteen: 19,
   twenty: 20,
+  thirty: 30,
+  forty: 40,
+  fifty: 50,
   half: 0.5,
 };
 
-const UNIT_ALIASES = {
-  kg: "kg",
-  kilo: "kg",
-  kilos: "kg",
-  kilogram: "kg",
-  kilograms: "kg",
-  g: "g",
-  gram: "g",
-  grams: "g",
-  litre: "litre",
-  litres: "litre",
-  liter: "litre",
-  liters: "litre",
-  l: "litre",
-  ml: "ml",
-  millilitre: "ml",
-  millilitres: "ml",
-  milliliter: "ml",
-  milliliters: "ml",
-  packet: "packet",
-  packets: "packet",
-  pack: "packet",
-  packs: "packet",
-  bottle: "bottle",
-  bottles: "bottle",
-  box: "box",
-  boxes: "box",
-  dozen: "dozen",
-  dozens: "dozen",
-  piece: "piece",
-  pieces: "piece",
-  pcs: "pcs",
-  pc: "pcs",
-};
-
-function splitItems(text) {
-  return text
-    .split(/\s*(?:,|&| and )\s*/i)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
+const SKIP_TOKENS = new Set([
+  "of",
+  "to",
+  "for",
+  "on",
+  "my",
+  "list",
+  "the",
+  "some",
+  "please",
+  "also",
+]);
 
 function parseQtyToken(token) {
   if (!token) return null;
@@ -74,71 +49,170 @@ function parseQtyToken(token) {
   return null;
 }
 
+export function titleCase(name) {
+  return String(name ?? "")
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+export function cleanSpeech(raw) {
+  let t = String(raw ?? "").toLowerCase();
+  t = t.replace(/[’']/g, "'");
+  t = t.replace(/[.,!?]+/g, " ");
+  t = t.replace(/\bhalf[-\s]?dozen\b/g, "6");
+  t = t.replace(/\b(um+|uh+|erm+|er+|ah+|hmm+)\b/g, " ");
+  t = t.replace(/\b(like|please|maybe|just|also|actually|basically|literally)\b/g, " ");
+  t = t.replace(/\b(can you|could you|would you|will you|can we|could we)\b/g, " ");
+  t = t.replace(/\b(i think|i guess|i feel like)\b/g, " ");
+  t = t.replace(/\b(i need|i want|i'd like|i would like|i gotta|i have to)\b/g, " ");
+  t = t.replace(/\b(give me|get me)\b/g, " ");
+  t = t.replace(/\bput\b/g, " ");
+  t = t.replace(/\b(on my list|to my list|from my list|from the list|onto my list|on the list)\b/g, " ");
+  t = t.replace(/\b(for me|thanks|thank you)\b/g, " ");
+  return t.replace(/\s+/g, " ").trim();
+}
+
+function splitItems(text) {
+  return text
+    .split(/\s*(?:,|&| and )\s*/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function isUnitToken(token, next) {
+  if (UNIT_ALIASES[token]) return true;
+  if (!isWeakUnit(token)) return false;
+  return !next || next === "of" || Boolean(UNIT_ALIASES[next]);
+}
+
 export function parseItemPhrase(phrase) {
-  const text = String(phrase ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[.?!\s]+$/g, "")
-    .replace(/^(please\s+)?(some|the)\s+/i, "");
+  const text = cleanSpeech(phrase).replace(/[.?!\s]+$/g, "");
   if (!text) {
-    return { name: "", quantity: 1, unit: "pcs", unitSpecified: false };
+    return {
+      name: "",
+      item: "",
+      quantity: 1,
+      unit: "pcs",
+      unitSpecified: false,
+      category: "other",
+    };
   }
 
-  const tokens = text.split(/\s+/);
-  let i = 0;
+  const tokens = text.split(/\s+/).filter(Boolean);
   let quantity = 1;
-  let unit = "pcs";
-  let unitSpecified = false;
+  let qtyFound = false;
+  let unit = null;
+  const nameTokens = [];
 
-  const qty = parseQtyToken(tokens[0]);
-  if (qty != null) {
-    quantity = qty;
-    i = 1;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    const next = tokens[i + 1];
+
+    if (SKIP_TOKENS.has(token)) continue;
+
+    if (token === "a" || token === "an") {
+      if (!qtyFound) {
+        quantity = 1;
+        qtyFound = true;
+      }
+      continue;
+    }
+
+    if (token === "dozen" || token === "dozens") {
+      quantity = (qtyFound ? quantity : 1) * 12;
+      qtyFound = true;
+      if (!unit) unit = "pcs";
+      continue;
+    }
+
+    const qty = parseQtyToken(token);
+    if (qty != null && !qtyFound) {
+      quantity = qty;
+      qtyFound = true;
+      continue;
+    }
+
+    if (isUnitToken(token, next) && !unit) {
+      unit = UNIT_ALIASES[token] || (isWeakUnit(token) ? "g" : null);
+      continue;
+    }
+
+    if (isWeakUnit(token) && next && next !== "of") {
+      nameTokens.push(token);
+      continue;
+    }
+
+    nameTokens.push(token);
   }
 
-  if (tokens[i] && UNIT_ALIASES[tokens[i]]) {
-    unit = UNIT_ALIASES[tokens[i]];
-    unitSpecified = true;
-    i += 1;
-  }
+  const name = titleCase(nameTokens.join(" "));
+  const category = categoryOf(name);
+  const unitSpecified = Boolean(unit);
+  return {
+    name,
+    item: name,
+    quantity,
+    unit: unit || defaultUnit(),
+    unitSpecified,
+    category,
+  };
+}
 
-  if (tokens[i] === "of") i += 1;
-
-  const name = tokens.slice(i).join(" ").trim();
-  return { name, quantity, unit, unitSpecified };
+function stripAction(text, pattern) {
+  return text.replace(pattern, " ").replace(/\s+/g, " ").trim();
 }
 
 export function parseCommand(transcript) {
-  const raw = String(transcript ?? "").trim();
-  if (!raw) return { action: "add", items: [] };
+  const cleaned = cleanSpeech(transcript);
+  if (!cleaned) return { action: "add", items: [] };
 
-  const t = raw.toLowerCase().replace(/[.?!\s]+$/g, "").trim();
+  let action = "add";
+  let rest = cleaned;
 
-  const removeMatch = t.match(/^(?:please\s+)?(?:remove|delete|drop)\s+(.+)/i);
-  if (removeMatch) {
-    return {
-      action: "remove",
-      items: splitItems(removeMatch[1]).map(parseItemPhrase).filter((item) => item.name),
-    };
+  if (/\b(remove|delete|drop|take off)\b/.test(cleaned)) {
+    action = "remove";
+    rest = stripAction(cleaned, /\b(remove|delete|drop|take off)\b/g);
+  } else if (/\bcheck off\b/.test(cleaned) || /\bmark\b/.test(cleaned) || /\bgot\b/.test(cleaned)) {
+    action = "check";
+    rest = stripAction(cleaned, /\b(check off|check|got|mark|as done|done|off)\b/g);
+  } else if (/\b(update|set|change)\b/.test(cleaned)) {
+    action = "update";
+    rest = stripAction(cleaned, /\b(update|set|change)\b/g);
+  } else {
+    rest = stripAction(cleaned, /\b(add|buy|get|pick up|need|want)\b/g);
   }
 
-  const checkMatch = t.match(
-    /^(?:please\s+)?(?:check\s+off|check|got|mark)\s+(.+?)(?:\s+as\s+done|\s+done|\s+off)?$/i
-  );
-  if (checkMatch) {
-    const names = checkMatch[1].replace(/\s+(?:as\s+done|done|off)$/i, "");
-    return {
-      action: "check",
-      items: splitItems(names).map(parseItemPhrase).filter((item) => item.name),
-    };
-  }
+  const items = splitItems(rest)
+    .map(parseItemPhrase)
+    .filter((item) => item.name);
 
-  const addMatch = t.match(
-    /^(?:please\s+)?(?:add|i need|need|buy|get|pick up)\s+(.+)/i
-  );
-  const rest = addMatch ? addMatch[1] : t;
+  return { action, items };
+}
+
+export function parseShoppingCommand(transcript) {
+  const { action, items } = parseCommand(transcript);
+  if (!items.length) return null;
+  const first = items[0];
   return {
-    action: "add",
-    items: splitItems(rest).map(parseItemPhrase).filter((item) => item.name),
+    action,
+    item: first.item,
+    quantity: first.quantity,
+    unit: first.unit,
+    category: first.category,
+    unitSpecified: first.unitSpecified,
+    items,
   };
 }
+
+export function looksLikePhrase(name) {
+  const text = String(name ?? "").toLowerCase();
+  return (
+    /\b(of|packet|packets|kilo|kilos|dozen|bottle|bottles|roll|rolls|kg|ml)\b/.test(text) ||
+    /^(a|an|the|add|please)\s/.test(text) ||
+    /^\d/.test(text)
+  );
+}
+
+export { normalizeUnit };

@@ -21,30 +21,40 @@ const UNIT_ALIASES = {
   g: "g",
   gram: "g",
   grams: "g",
-  litre: "litre",
-  litres: "litre",
-  liter: "litre",
-  liters: "litre",
-  l: "litre",
+  loaf: "loaf",
+  loaves: "loaf",
+  lb: "lb",
+  lbs: "lb",
+  pound: "lb",
+  pounds: "lb",
+  gallon: "gallon",
+  gallons: "gallon",
+  packet: "packet",
+  packets: "packet",
+  pack: "pack",
+  packs: "pack",
+  bottle: "bottle",
+  bottles: "bottle",
+  box: "box",
+  boxes: "box",
+  roll: "roll",
+  rolls: "roll",
+  dozen: "pcs",
+  dozens: "pcs",
+  piece: "pcs",
+  pieces: "pcs",
+  pcs: "pcs",
+  pc: "pcs",
+  litre: "L",
+  litres: "L",
+  liter: "L",
+  liters: "L",
+  l: "L",
   ml: "ml",
   millilitre: "ml",
   millilitres: "ml",
   milliliter: "ml",
   milliliters: "ml",
-  packet: "packet",
-  packets: "packet",
-  pack: "packet",
-  packs: "packet",
-  bottle: "bottle",
-  bottles: "bottle",
-  box: "box",
-  boxes: "box",
-  dozen: "dozen",
-  dozens: "dozen",
-  piece: "piece",
-  pieces: "piece",
-  pcs: "pcs",
-  pc: "pcs",
 };
 
 function normalizeName(name) {
@@ -142,6 +152,11 @@ app.patch("/api/items/:id", async (req, res) => {
   if (!item) {
     res.status(404).json({ error: "Not found" });
     return;
+  }
+
+  if (typeof req.body?.name === "string") {
+    const nextName = normalizeName(req.body.name);
+    if (nextName) item.name = nextName;
   }
 
   if (typeof req.body?.checked === "boolean") {

@@ -1,11 +1,5 @@
 [
   {
-    "id": "84269990-c0b8-435e-b037-49ac1a5e3f9b",
-    "name": "1 kilo of gram flour",
-    "checked": false,
-    "createdAt": "2026-08-21T12:47:57.809Z"
-  },
-  {
     "id": "248ffe46-2dee-4805-b00f-e8792d0fef52",
     "name": "three packets of milk",
     "checked": false,
@@ -24,15 +18,15 @@
     "createdAt": "2026-08-21T12:49:31.779Z"
   },
   {
-    "id": "9c7f5105-32f6-41f8-aae6-355e5409f91d",
-    "name": "also a role of toilet paper",
+    "id": "24c1f6cc-40fb-4fd5-8ede-109777532be4",
+    "name": "Butter",
     "checked": false,
-    "createdAt": "2026-08-21T12:49:49.428Z"
+    "createdAt": "2026-08-21T14:20:30.616Z"
   },
   {
-    "id": "72116464-c446-4ada-81d9-2708ea6220c0",
-    "name": "tomatoes",
+    "id": "ee362148-3079-40a4-a562-7743a6829568",
+    "name": "Tomatoes",
     "checked": false,
-    "createdAt": "2026-08-21T13:44:10.353Z"
+    "createdAt": "2026-08-21T14:24:44.931Z"
   }
 ]

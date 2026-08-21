@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { addItem, deleteItem, getItems, getSuggestions, patchItem } from "./api.js";
-import { parseCommand, parseItemPhrase } from "./parseCommand.js";
+import { CATEGORIES, categoryMeta, categoryOf } from "./categories.js";
+import { looksLikePhrase, parseItemPhrase, parseShoppingCommand, titleCase } from "./parseCommand.js";
+import { displayUnit } from "./units.js";
 import { useSpeech } from "./useSpeech.js";
 
 function sortItems(items) {
@@ -10,30 +12,39 @@ function sortItems(items) {
   });
 }
 
-function titleCase(name) {
-  return name
-    .split(" ")
-    .map((word) => (word ? word[0].toUpperCase() + word.slice(1) : word))
-    .join(" ");
-}
-
 function formatEntry({ name, quantity, unit }) {
   const qty = quantity ?? 1;
-  const label = unit && unit !== "pcs" ? `${qty} ${unit}` : String(qty);
-  return `${label} ${titleCase(name)}`;
+  return `${qty} ${displayUnit(unit, qty)} ${titleCase(name)}`;
+}
+
+function withCategory(item) {
+  const parsed = parseItemPhrase(item.name);
+  const messy = looksLikePhrase(item.name);
+  const name = messy && parsed.name ? parsed.name : titleCase(item.name);
+  const stored = Number(item.quantity);
+  const hasStoredQty = Number.isFinite(stored) && stored > 0;
+  return {
+    ...item,
+    name,
+    quantity: hasStoredQty ? stored : parsed.quantity || 1,
+    unit: item.unit && item.unit !== "pcs" ? item.unit : parsed.unit || "pcs",
+    category: parsed.category || categoryOf(name),
+  };
 }
 
 export default function App() {
   const [items, setItems] = useState([]);
   const [suggestions, setSuggestions] = useState([]);
   const [query, setQuery] = useState("");
-  const [status, setStatus] = useState("Tap the mic, or type to add an item.");
+  const [tab, setTab] = useState("list");
+  const [filter, setFilter] = useState("all");
+  const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     const next = await getItems();
-    setItems(sortItems(next));
+    setItems(sortItems(next.map(withCategory)));
   }, []);
 
   useEffect(() => {
@@ -42,8 +53,31 @@ export default function App() {
       try {
         const [list, groups] = await Promise.all([getItems(), getSuggestions()]);
         if (cancelled) return;
-        setItems(sortItems(list));
         setSuggestions(groups);
+        const cleaned = [];
+        for (const item of list) {
+          if (!looksLikePhrase(item.name)) {
+            cleaned.push(item);
+            continue;
+          }
+          const parsed = parseItemPhrase(item.name);
+          if (!parsed.name) {
+            cleaned.push(item);
+            continue;
+          }
+          const quantity =
+            Number(item.quantity) > 1 ? Number(item.quantity) : parsed.quantity;
+          const saved = await patchItem(item.id, {
+            name: parsed.name,
+            quantity,
+            unit: parsed.unit,
+          });
+          cleaned.push(
+            saved || { ...item, name: parsed.name, quantity, unit: parsed.unit }
+          );
+        }
+        if (cancelled) return;
+        setItems(sortItems(cleaned.map(withCategory)));
       } catch (err) {
         if (!cancelled) setError(err.message || "Could not load the list.");
       }
@@ -53,29 +87,48 @@ export default function App() {
     };
   }, []);
 
+  const findByName = useCallback(
+    (name) =>
+      items.find((item) => item.name.toLowerCase() === name.toLowerCase()),
+    [items]
+  );
+
   const handleAdd = useCallback(
     async (name, options = {}) => {
       const parsed = parseItemPhrase(name);
       const itemName = (options.name ?? parsed.name).trim();
       if (!itemName) return;
-      const quantity = options.quantity ?? parsed.quantity ?? 1;
+      const quantity = Object.prototype.hasOwnProperty.call(options, "quantity")
+        ? options.quantity
+        : parsed.quantity ?? 1;
+      const existing = findByName(itemName);
       const unit =
-        options.unit ?? (parsed.unitSpecified ? parsed.unit : undefined);
+        options.unit ??
+        (parsed.unitSpecified || !existing ? parsed.unit : undefined);
       setBusy(true);
       setError("");
       try {
-        await addItem(itemName, { quantity, unit });
+        if (existing) {
+          await patchItem(existing.id, {
+            name: itemName,
+            quantity: (existing.quantity ?? 1) + quantity,
+            ...(unit ? { unit } : {}),
+          });
+        } else {
+          await addItem(itemName, { quantity, unit });
+        }
         await refresh();
         setStatus(
-          `Added ${formatEntry({ name: itemName, quantity, unit: unit || "pcs" })}.`
+          `Added ${formatEntry({ name: itemName, quantity, unit: unit || parsed.unit })}.`
         );
+        setTab("list");
       } catch (err) {
         setError(err.message);
       } finally {
         setBusy(false);
       }
     },
-    [refresh]
+    [findByName, refresh]
   );
 
   const handleToggle = useCallback(
@@ -108,48 +161,82 @@ export default function App() {
   const handleSetQuantity = useCallback(
     async (item, nextQty) => {
       const quantity = Number(nextQty);
+      if (!Number.isFinite(quantity)) return;
       setError("");
       try {
-        if (!Number.isFinite(quantity) || quantity <= 0) {
+        if (quantity <= 0) {
+          setItems((prev) => prev.filter((entry) => entry.id !== item.id));
           await deleteItem(item.id);
           setStatus(`Removed ${item.name}.`);
-        } else {
-          await patchItem(item.id, { quantity });
+          return;
         }
-        await refresh();
+        setItems((prev) =>
+          prev.map((entry) =>
+            entry.id === item.id ? { ...entry, quantity } : entry
+          )
+        );
+        await patchItem(item.id, { quantity, name: item.name, unit: item.unit });
       } catch (err) {
         setError(err.message);
+        await refresh();
       }
     },
     [refresh]
   );
 
-  const findByName = useCallback(
-    (name) =>
-      items.find((item) => item.name.toLowerCase() === name.toLowerCase()),
-    [items]
-  );
-
   const applyVoice = useCallback(
     async (transcript) => {
-      const { action, items: parsed } = parseCommand(transcript);
+      const parsedCommand = parseShoppingCommand(transcript);
+      const parsed = parsedCommand?.items ?? [];
       if (!parsed.length) {
         setStatus(`Heard “${transcript}” — nothing to add.`);
         return;
       }
+      const action = parsedCommand.action;
 
       setBusy(true);
       setError("");
       try {
         if (action === "add") {
           for (const entry of parsed) {
-            await addItem(entry.name, {
-              quantity: entry.quantity ?? 1,
-              unit: entry.unitSpecified ? entry.unit : undefined,
-            });
+            const existing = findByName(entry.name);
+            if (existing) {
+              await patchItem(existing.id, {
+                name: entry.name,
+                quantity: (existing.quantity ?? 1) + (entry.quantity ?? 1),
+                ...(entry.unitSpecified ? { unit: entry.unit } : {}),
+              });
+            } else {
+              await addItem(entry.name, {
+                quantity: entry.quantity ?? 1,
+                unit: entry.unit,
+              });
+            }
           }
           await refresh();
           setStatus(`Added ${parsed.map(formatEntry).join(", ")}.`);
+          setTab("list");
+          return;
+        }
+
+        if (action === "update") {
+          for (const entry of parsed) {
+            const match = findByName(entry.name);
+            if (match) {
+              await patchItem(match.id, {
+                quantity: entry.quantity ?? 1,
+                ...(entry.unitSpecified ? { unit: entry.unit } : {}),
+              });
+            } else {
+              await addItem(entry.name, {
+                quantity: entry.quantity ?? 1,
+                unit: entry.unit,
+              });
+            }
+          }
+          await refresh();
+          setStatus(`Updated ${parsed.map(formatEntry).join(", ")}.`);
+          setTab("list");
           return;
         }
 
@@ -175,6 +262,7 @@ export default function App() {
           if (changed.length) parts.push(`Updated ${changed.join(", ")}.`);
           if (missing.length) parts.push(`Could not find ${missing.join(", ")}.`);
           setStatus(parts.join(" ") || "Nothing to remove.");
+          setTab("list");
           return;
         }
 
@@ -188,6 +276,7 @@ export default function App() {
             ? `Checked off ${matches.map((item) => item.name).join(", ")}.`
             : `Could not find ${parsed.map((entry) => titleCase(entry.name)).join(", ")}.`
         );
+        setTab("list");
       } catch (err) {
         setError(err.message);
       } finally {
@@ -199,11 +288,42 @@ export default function App() {
 
   const { supported, listening, interim, toggle } = useSpeech(applyVoice);
 
-  const filtered = useMemo(() => {
+  const checkedCount = items.filter((item) => item.checked).length;
+  const total = items.length;
+  const percent = total ? Math.round((checkedCount / total) * 100) : 0;
+
+  const visibleItems = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((item) => item.name.toLowerCase().includes(q));
-  }, [items, query]);
+    return items.filter((item) => {
+      const cat = categoryOf(item.name);
+      if (filter !== "all" && cat !== filter) return false;
+      if (tab === "search" && q && !item.name.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [items, filter, query, tab]);
+
+  const grouped = useMemo(() => {
+    const buckets = new Map();
+    for (const item of visibleItems) {
+      const id = categoryOf(item.name);
+      if (!buckets.has(id)) buckets.set(id, []);
+      buckets.get(id).push(item);
+    }
+    return CATEGORIES.filter((cat) => buckets.has(cat.id)).map((cat) => ({
+      ...cat,
+      items: buckets.get(cat.id),
+    }));
+  }, [visibleItems]);
+
+  const counts = useMemo(() => {
+    const next = { all: items.length };
+    for (const cat of CATEGORIES) next[cat.id] = 0;
+    for (const item of items) next[categoryOf(item.name)] += 1;
+    return next;
+  }, [items]);
+
+  const listedIds = new Set(items.map((item) => item.name.toLowerCase()));
+  const smartCount = suggestions.reduce((sum, group) => sum + group.items.length, 0);
 
   const onSearchSubmit = async (event) => {
     event.preventDefault();
@@ -213,27 +333,35 @@ export default function App() {
     setQuery("");
   };
 
-  const listedIds = new Set(items.map((item) => item.name.toLowerCase()));
+  const helper = !supported
+    ? "Speech is not supported in this browser. Use search or suggestions."
+    : listening
+      ? interim || "Listening…"
+      : status || 'Tap mic · say "Add 2 bottles of water" or "Remove apples"';
 
   return (
     <div className="page">
       <header className="header">
-        <p className="eyebrow">Shopping list</p>
-        <h1>VoiceCart</h1>
-        <p className="lede">A quiet, voice-first list. Speak, search, or tap.</p>
+        <div className="header-row">
+          <div>
+            <p className="eyebrow">Voice assistant</p>
+            <h1>VoiceCart</h1>
+          </div>
+          <button type="button" className="lang" aria-label="Language">
+            <GlobeIcon />
+            Eng
+          </button>
+        </div>
+        <div className="progress-meta">
+          <span>
+            {checkedCount}/{total || 0} items
+          </span>
+          <span>{percent}%</span>
+        </div>
+        <div className="progress" role="progressbar" aria-valuenow={percent} aria-valuemin="0" aria-valuemax="100">
+          <span style={{ width: `${percent}%` }} />
+        </div>
       </header>
-
-      <form className="search" onSubmit={onSearchSubmit}>
-        <label htmlFor="search">Search or add</label>
-        <input
-          id="search"
-          type="search"
-          placeholder="Search the list, or press Enter to add"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          autoComplete="off"
-        />
-      </form>
 
       <section className="mic-block" aria-label="Voice input">
         {supported ? (
@@ -246,112 +374,188 @@ export default function App() {
           >
             <MicIcon />
           </button>
-        ) : null}
-        <p className="status">
-          {!supported
-            ? "Speech is not supported in this browser. Use search or suggestions."
-            : listening
-              ? interim || "Listening…"
-              : status}
-        </p>
-      </section>
-
-      {error ? <p className="error">{error}</p> : null}
-
-      <section className="list-block" aria-label="Shopping list">
-        <div className="section-head">
-          <h2>List</h2>
-          <span>{items.filter((item) => !item.checked).length} remaining</span>
-        </div>
-        {filtered.length === 0 ? (
-          <p className="empty">
-            {items.length === 0
-              ? "Tap the mic or search to add."
-              : "No items match that search."}
-          </p>
         ) : (
-          <ul className="list">
-            {filtered.map((item) => (
-              <li key={item.id} className={item.checked ? "checked" : ""}>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={item.checked}
-                    onChange={() => handleToggle(item)}
-                  />
-                  <span className="item-copy">
-                    <span className="item-name">
-                      {item.name}
-                      <span className="item-qty"> {item.quantity ?? 1}</span>
-                    </span>
-                    <span className="item-unit">{item.unit || "pcs"}</span>
-                  </span>
-                </label>
-                <div className="item-actions">
-                  <QtyControls
-                    quantity={item.quantity ?? 1}
-                    name={item.name}
-                    onChange={(qty) => handleSetQuantity(item, qty)}
-                  />
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => handleRemove(item)}
-                    aria-label={`Remove ${item.name}`}
-                  >
-                    Remove
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
+          <div className="mic disabled" aria-hidden="true">
+            <MicIcon />
+          </div>
         )}
+        <p className="status">{helper}</p>
+        {error ? <p className="error">{error}</p> : null}
       </section>
 
-      <section className="suggestions" aria-label="Suggestions">
-        <div className="section-head">
-          <h2>Suggestions</h2>
+      <nav className="tabs" aria-label="Views">
+        <button
+          type="button"
+          className={tab === "list" ? "active" : ""}
+          onClick={() => setTab("list")}
+        >
+          <ClipboardIcon />
+          List {total ? <em>{total}</em> : null}
+        </button>
+        <button
+          type="button"
+          className={tab === "smart" ? "active" : ""}
+          onClick={() => setTab("smart")}
+        >
+          <SparkleIcon />
+          Smart {smartCount ? <em>{smartCount}</em> : null}
+        </button>
+        <button
+          type="button"
+          className={tab === "search" ? "active" : ""}
+          onClick={() => setTab("search")}
+        >
+          <SearchIcon />
+          Search
+        </button>
+      </nav>
+
+      {tab !== "smart" ? (
+        <div className="filters" role="tablist" aria-label="Categories">
+          <button
+            type="button"
+            className={`chip ${filter === "all" ? "active" : ""}`}
+            onClick={() => setFilter("all")}
+          >
+            All {counts.all || 0}
+          </button>
+          {CATEGORIES.filter((cat) => cat.id !== "other" || counts.other).map((cat) => (
+            <button
+              key={cat.id}
+              type="button"
+              className={`chip ${filter === cat.id ? "active" : ""}`}
+              onClick={() => setFilter(cat.id)}
+            >
+              <span aria-hidden="true">{cat.icon}</span>
+              {cat.label}
+            </button>
+          ))}
         </div>
-        {suggestions.map((group) => (
-          <div key={group.category} className="group">
-            <h3>{group.category}</h3>
-            <div className="pills">
-              {group.items.map((name) => {
-                const added = listedIds.has(name.toLowerCase());
-                return (
-                  <button
-                    key={name}
-                    type="button"
-                    className={`pill ${added ? "added" : ""}`}
-                    disabled={busy}
-                    onClick={() => handleAdd(name, { quantity: 1 })}
-                  >
-                    {name}
-                  </button>
-                );
-              })}
+      ) : null}
+
+      {tab === "search" ? (
+        <form className="search" onSubmit={onSearchSubmit}>
+          <label htmlFor="search" className="sr-only">
+            Search or add
+          </label>
+          <input
+            id="search"
+            type="search"
+            placeholder="Search the list, or press Enter to add"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            autoComplete="off"
+          />
+        </form>
+      ) : null}
+
+      {tab === "smart" ? (
+        <section className="smart" aria-label="Suggestions">
+          {suggestions.map((group) => (
+            <div key={group.category} className="group">
+              <CategoryHead id={categoryOf(group.items[0] || group.category)} fallback={group.category} />
+              <div className="pills">
+                {group.items.map((name) => {
+                  const added = listedIds.has(name.toLowerCase());
+                  return (
+                    <button
+                      key={name}
+                      type="button"
+                      className={`pill ${added ? "added" : ""}`}
+                      disabled={busy}
+                      onClick={() => handleAdd(name, { quantity: 1 })}
+                    >
+                      {name}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        ))}
-      </section>
+          ))}
+        </section>
+      ) : (
+        <section className="list-block" aria-label="VoiceCart">
+          {visibleItems.length === 0 ? (
+            <p className="empty">
+              {items.length === 0
+                ? "Tap the mic or search to add."
+                : "No items match that filter."}
+            </p>
+          ) : (
+            grouped.map((group) => (
+              <div key={group.id} className="group">
+                <CategoryHead id={group.id} />
+                <ul className="cards">
+                  {group.items.map((item) => (
+                    <li key={item.id} className={item.checked ? "card checked" : "card"}>
+                      <button
+                        type="button"
+                        className={`check ${item.checked ? "on" : ""}`}
+                        onClick={() => handleToggle(item)}
+                        aria-label={`${item.checked ? "Uncheck" : "Check"} ${item.name}`}
+                      />
+                      <div className="item-copy">
+                        <span className="item-name">{item.name}</span>
+                        <span className="item-measure">
+                          {item.quantity ?? 1} {displayUnit(item.unit || "pcs", item.quantity ?? 1)}
+                        </span>
+                      </div>
+                      <QtyControls
+                        quantity={item.quantity ?? 1}
+                        name={item.name}
+                        onChange={(qty) => handleSetQuantity(item, qty)}
+                      />
+                      <button
+                        type="button"
+                        className="delete"
+                        onClick={() => handleRemove(item)}
+                        aria-label={`Remove ${item.name}`}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))
+          )}
+        </section>
+      )}
     </div>
   );
 }
 
+function CategoryHead({ id, fallback }) {
+  const meta = categoryMeta(id);
+  return (
+    <h2 className="cat-head">
+      <span aria-hidden="true">{meta.icon}</span>
+      {fallback || meta.label}
+      <i />
+    </h2>
+  );
+}
+
 function QtyControls({ quantity, name, onChange }) {
-  const [draft, setDraft] = useState(String(quantity));
+  const qty = Number(quantity) || 0;
+  const [draft, setDraft] = useState(String(qty));
 
   useEffect(() => {
-    setDraft(String(quantity));
-  }, [quantity]);
+    setDraft(String(qty));
+  }, [qty]);
 
   const commit = () => {
     const next = Number(draft);
-    if (!Number.isFinite(next) || next === quantity) {
-      setDraft(String(quantity));
+    if (!Number.isFinite(next) || next === qty) {
+      setDraft(String(qty));
       return;
     }
     onChange(next);
+  };
+
+  const bump = (delta) => (event) => {
+    event.preventDefault();
+    onChange(qty + delta);
   };
 
   return (
@@ -359,7 +563,8 @@ function QtyControls({ quantity, name, onChange }) {
       <button
         type="button"
         className="qty-btn"
-        onClick={() => onChange(quantity - 1)}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={bump(-1)}
         aria-label={`Decrease ${name}`}
       >
         −
@@ -383,7 +588,8 @@ function QtyControls({ quantity, name, onChange }) {
       <button
         type="button"
         className="qty-btn"
-        onClick={() => onChange(quantity + 1)}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={bump(1)}
         aria-label={`Increase ${name}`}
       >
         +
@@ -398,6 +604,50 @@ function MicIcon() {
       <path
         fill="currentColor"
         d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm7-3a1 1 0 1 0-2 0 5 5 0 0 1-10 0 1 1 0 1 0-2 0 7 7 0 0 0 6 6.92V20H8a1 1 0 1 0 0 2h8a1 1 0 1 0 0-2h-3v-2.08A7 7 0 0 0 19 11Z"
+      />
+    </svg>
+  );
+}
+
+function GlobeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 2c.7 0 2.3 1.7 3 5H9c.7-3.3 2.3-5 3-5Zm-4.1 7h8.2c.10.0.2.5.3 1s-.1.7-.3 1H7.9c-.2-.3-.3-.7-.3-1s.1-.7.3-1Zm.1 4h6c-.7 3.3-2.3 5-3 5s-2.3-1.7-3-5Z"
+      />
+    </svg>
+  );
+}
+
+function ClipboardIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M9 3h6a2 2 0 0 1 2 2h1a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h1a2 2 0 0 1 2-2Zm0 2v2h6V5H9Zm-3 4v10h12V9H6Z"
+      />
+    </svg>
+  );
+}
+
+function SparkleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M12 2l1.4 6.1L19 10l-5.6 1.9L12 18l-1.4-6.1L5 10l5.6-1.9L12 2Zm7 11 0.8 3.2L23 17l-3.2.8L19 21l-.8-3.2L15 17l3.2-.8L19 13Z"
+      />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M10 3a7 7 0 1 1 0 14 7 7 0 0 1 0-14Zm0 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm8.7 12.3 1.4 1.4-3.8 3.8-1.4-1.4 3.8-3.8Z"
       />
     </svg>
   );
