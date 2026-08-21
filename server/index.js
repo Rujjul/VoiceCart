@@ -197,6 +197,14 @@ app.get("/api/suggestions", (_req, res) => {
   res.json(suggestions);
 });
 
+const clientDist = join(__dirname, "..", "client", "dist");
+if (process.env.NODE_ENV === "production") {
+  app.use(express.static(clientDist));
+  app.get(/^(?!\/api).*/, (_req, res) => {
+    res.sendFile(join(clientDist, "index.html"));
+  });
+}
+
 app.listen(PORT, () => {
-  console.log(`VoiceCart API on http://localhost:${PORT}`);
+  console.log(`VoiceCart on http://localhost:${PORT}`);
 });

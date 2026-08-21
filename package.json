@@ -3,7 +3,11 @@
   "private": true,
   "scripts": {
     "dev": "concurrently -n server,client -c teal,cyan \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "build": "npm install --prefix client && npm run build --prefix client && npm install --prefix server",
     "start": "npm start --prefix server"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
