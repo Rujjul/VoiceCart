@@ -1,0 +1,11 @@
+{
+  "name": "voiceart",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n server,client -c teal,cyan \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "start": "npm start --prefix server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

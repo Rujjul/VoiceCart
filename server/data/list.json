@@ -1,0 +1,38 @@
+[
+  {
+    "id": "96d53126-087d-4e85-b684-732be6258c10",
+    "name": "a packet of biscuit",
+    "checked": false,
+    "createdAt": "2026-08-21T12:47:36.336Z"
+  },
+  {
+    "id": "84269990-c0b8-435e-b037-49ac1a5e3f9b",
+    "name": "1 kilo of gram flour",
+    "checked": false,
+    "createdAt": "2026-08-21T12:47:57.809Z"
+  },
+  {
+    "id": "248ffe46-2dee-4805-b00f-e8792d0fef52",
+    "name": "three packets of milk",
+    "checked": false,
+    "createdAt": "2026-08-21T12:48:45.224Z"
+  },
+  {
+    "id": "febe0018-9b3c-4b31-88be-fc3475a1c024",
+    "name": "a dozen of bananas",
+    "checked": false,
+    "createdAt": "2026-08-21T12:48:56.703Z"
+  },
+  {
+    "id": "28c1f488-35de-4b5c-87a6-6f20c54192b6",
+    "name": "avocados",
+    "checked": false,
+    "createdAt": "2026-08-21T12:49:31.779Z"
+  },
+  {
+    "id": "9c7f5105-32f6-41f8-aae6-355e5409f91d",
+    "name": "also a role of toilet paper",
+    "checked": false,
+    "createdAt": "2026-08-21T12:49:49.428Z"
+  }
+]
