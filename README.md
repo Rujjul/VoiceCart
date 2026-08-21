@@ -2,7 +2,7 @@
 
 Voice-first shopping list. Add, update, check off, and remove items by speaking naturally — or type when you prefer.
 
-**Live demo:** [voicecart-production.up.railway.app](https://voicecart-production.up.railway.app)
+**Live demo:** [voicecart.up.railway.app](https://voicecart.up.railway.app)
 
 ## Features
 
@@ -13,7 +13,7 @@ Voice-first shopping list. Add, update, check off, and remove items by speaking 
 - **Categories** — produce, dairy, bakery, meat, beverages, pantry, household, and more
 - **Quantity & units** — pcs, kg, g, ml, L, packet, bottle, loaf, roll, and similar
 - **Suggestions** for common grocery staples
-- **Persistent list** stored as JSON on the server
+- **Per-visit list** — each open or refresh starts with a blank list (kept in the browser for that session only)
 
 ## Tech stack
 
@@ -21,7 +21,7 @@ Voice-first shopping list. Add, update, check off, and remove items by speaking 
 | --- | --- |
 | Client | React 19, Vite |
 | Server | Node.js, Express |
-| Storage | `server/data/list.json` |
+| List state | In-browser (cleared on refresh) |
 | Deploy | Docker on Railway |
 
 ## Prerequisites
@@ -113,4 +113,4 @@ voice/
 ## Notes
 
 - Voice needs microphone permission and works best in Chrome or Edge.
-- List data lives in `server/data/list.json`. On ephemeral hosts (e.g. Railway without a volume), the file can reset on redeploy.
+- The shopping list is not shared between users and resets whenever the page is opened or refreshed.

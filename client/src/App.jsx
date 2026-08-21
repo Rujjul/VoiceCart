@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { addItem, deleteItem, getItems, getSuggestions, patchItem } from "./api.js";
+import { getSuggestions } from "./api.js";
 import { CATEGORIES, categoryMeta, categoryOf } from "./categories.js";
 import { looksLikePhrase, parseItemPhrase, parseShoppingCommand, titleCase } from "./parseCommand.js";
 import { displayUnit } from "./units.js";
@@ -32,6 +32,17 @@ function withCategory(item) {
   };
 }
 
+function createItem(name, { quantity = 1, unit = "pcs" } = {}) {
+  return withCategory({
+    id: crypto.randomUUID(),
+    name,
+    quantity,
+    unit,
+    checked: false,
+    createdAt: new Date().toISOString(),
+  });
+}
+
 export default function App() {
   const [items, setItems] = useState([]);
   const [suggestions, setSuggestions] = useState([]);
@@ -42,44 +53,14 @@ export default function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const refresh = useCallback(async () => {
-    const next = await getItems();
-    setItems(sortItems(next.map(withCategory)));
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [list, groups] = await Promise.all([getItems(), getSuggestions()]);
-        if (cancelled) return;
-        setSuggestions(groups);
-        const cleaned = [];
-        for (const item of list) {
-          if (!looksLikePhrase(item.name)) {
-            cleaned.push(item);
-            continue;
-          }
-          const parsed = parseItemPhrase(item.name);
-          if (!parsed.name) {
-            cleaned.push(item);
-            continue;
-          }
-          const quantity =
-            Number(item.quantity) > 1 ? Number(item.quantity) : parsed.quantity;
-          const saved = await patchItem(item.id, {
-            name: parsed.name,
-            quantity,
-            unit: parsed.unit,
-          });
-          cleaned.push(
-            saved || { ...item, name: parsed.name, quantity, unit: parsed.unit }
-          );
-        }
-        if (cancelled) return;
-        setItems(sortItems(cleaned.map(withCategory)));
+        const groups = await getSuggestions();
+        if (!cancelled) setSuggestions(groups);
       } catch (err) {
-        if (!cancelled) setError(err.message || "Could not load the list.");
+        if (!cancelled) setError(err.message || "Could not load suggestions.");
       }
     })();
     return () => {
@@ -108,81 +89,71 @@ export default function App() {
       setBusy(true);
       setError("");
       try {
-        if (existing) {
-          await patchItem(existing.id, {
-            name: itemName,
-            quantity: (existing.quantity ?? 1) + quantity,
-            ...(unit ? { unit } : {}),
-          });
-        } else {
-          await addItem(itemName, { quantity, unit });
-        }
-        await refresh();
+        setItems((prev) => {
+          const match = prev.find(
+            (item) => item.name.toLowerCase() === itemName.toLowerCase()
+          );
+          if (match) {
+            return sortItems(
+              prev.map((item) =>
+                item.id === match.id
+                  ? withCategory({
+                      ...item,
+                      quantity: (item.quantity ?? 1) + quantity,
+                      ...(unit ? { unit } : {}),
+                    })
+                  : item
+              )
+            );
+          }
+          return sortItems([
+            ...prev,
+            createItem(itemName, { quantity, unit: unit || parsed.unit }),
+          ]);
+        });
         setStatus(
           `Added ${formatEntry({ name: itemName, quantity, unit: unit || parsed.unit })}.`
         );
         setTab("list");
-      } catch (err) {
-        setError(err.message);
       } finally {
         setBusy(false);
       }
     },
-    [findByName, refresh]
+    [findByName]
   );
 
-  const handleToggle = useCallback(
-    async (item) => {
-      setError("");
-      try {
-        await patchItem(item.id, { checked: !item.checked });
-        await refresh();
-      } catch (err) {
-        setError(err.message);
-      }
-    },
-    [refresh]
-  );
+  const handleToggle = useCallback((item) => {
+    setError("");
+    setItems((prev) =>
+      sortItems(
+        prev.map((entry) =>
+          entry.id === item.id ? { ...entry, checked: !entry.checked } : entry
+        )
+      )
+    );
+  }, []);
 
-  const handleRemove = useCallback(
-    async (item) => {
-      setError("");
-      try {
-        await deleteItem(item.id);
-        await refresh();
-        setStatus(`Removed ${item.name}.`);
-      } catch (err) {
-        setError(err.message);
-      }
-    },
-    [refresh]
-  );
+  const handleRemove = useCallback((item) => {
+    setError("");
+    setItems((prev) => prev.filter((entry) => entry.id !== item.id));
+    setStatus(`Removed ${item.name}.`);
+  }, []);
 
-  const handleSetQuantity = useCallback(
-    async (item, nextQty) => {
-      const quantity = Number(nextQty);
-      if (!Number.isFinite(quantity)) return;
-      setError("");
-      try {
-        if (quantity <= 0) {
-          setItems((prev) => prev.filter((entry) => entry.id !== item.id));
-          await deleteItem(item.id);
-          setStatus(`Removed ${item.name}.`);
-          return;
-        }
-        setItems((prev) =>
-          prev.map((entry) =>
-            entry.id === item.id ? { ...entry, quantity } : entry
-          )
-        );
-        await patchItem(item.id, { quantity, name: item.name, unit: item.unit });
-      } catch (err) {
-        setError(err.message);
-        await refresh();
-      }
-    },
-    [refresh]
-  );
+  const handleSetQuantity = useCallback((item, nextQty) => {
+    const quantity = Number(nextQty);
+    if (!Number.isFinite(quantity)) return;
+    setError("");
+    if (quantity <= 0) {
+      setItems((prev) => prev.filter((entry) => entry.id !== item.id));
+      setStatus(`Removed ${item.name}.`);
+      return;
+    }
+    setItems((prev) =>
+      prev.map((entry) =>
+        entry.id === item.id ? withCategory({ ...entry, quantity }) : entry
+      )
+    );
+  }, []);
 
   const applyVoice = useCallback(
     async (transcript) => {
@@ -198,43 +169,59 @@ export default function App() {
       setError("");
       try {
         if (action === "add") {
-          for (const entry of parsed) {
-            const existing = findByName(entry.name);
-            if (existing) {
-              await patchItem(existing.id, {
-                name: entry.name,
-                quantity: (existing.quantity ?? 1) + (entry.quantity ?? 1),
-                ...(entry.unitSpecified ? { unit: entry.unit } : {}),
-              });
-            } else {
-              await addItem(entry.name, {
-                quantity: entry.quantity ?? 1,
-                unit: entry.unit,
-              });
+          setItems((prev) => {
+            let next = [...prev];
+            for (const entry of parsed) {
+              const index = next.findIndex(
+                (item) => item.name.toLowerCase() === entry.name.toLowerCase()
+              );
+              if (index >= 0) {
+                const match = next[index];
+                next[index] = withCategory({
+                  ...match,
+                  quantity: (match.quantity ?? 1) + (entry.quantity ?? 1),
+                  ...(entry.unitSpecified ? { unit: entry.unit } : {}),
+                });
+              } else {
+                next.push(
+                  createItem(entry.name, {
+                    quantity: entry.quantity ?? 1,
+                    unit: entry.unit,
+                  })
+                );
+              }
             }
-          }
-          await refresh();
+            return sortItems(next);
+          });
           setStatus(`Added ${parsed.map(formatEntry).join(", ")}.`);
           setTab("list");
           return;
         }
 
         if (action === "update") {
-          for (const entry of parsed) {
-            const match = findByName(entry.name);
-            if (match) {
-              await patchItem(match.id, {
-                quantity: entry.quantity ?? 1,
-                ...(entry.unitSpecified ? { unit: entry.unit } : {}),
-              });
-            } else {
-              await addItem(entry.name, {
-                quantity: entry.quantity ?? 1,
-                unit: entry.unit,
-              });
+          setItems((prev) => {
+            let next = [...prev];
+            for (const entry of parsed) {
+              const index = next.findIndex(
+                (item) => item.name.toLowerCase() === entry.name.toLowerCase()
+              );
+              if (index >= 0) {
+                next[index] = withCategory({
+                  ...next[index],
+                  quantity: entry.quantity ?? 1,
+                  ...(entry.unitSpecified ? { unit: entry.unit } : {}),
+                });
+              } else {
+                next.push(
+                  createItem(entry.name, {
+                    quantity: entry.quantity ?? 1,
+                    unit: entry.unit,
+                  })
+                );
+              }
             }
-          }
-          await refresh();
+            return sortItems(next);
+          });
           setStatus(`Updated ${parsed.map(formatEntry).join(", ")}.`);
           setTab("list");
           return;
@@ -243,21 +230,28 @@ export default function App() {
         if (action === "remove") {
           const changed = [];
           const missing = [];
-          for (const entry of parsed) {
-            const match = findByName(entry.name);
-            if (!match) {
-              missing.push(titleCase(entry.name));
-              continue;
+          const nextItems = (() => {
+            let next = [...items];
+            for (const entry of parsed) {
+              const index = next.findIndex(
+                (item) => item.name.toLowerCase() === entry.name.toLowerCase()
+              );
+              if (index < 0) {
+                missing.push(titleCase(entry.name));
+                continue;
+              }
+              const match = next[index];
+              const nextQty = (match.quantity ?? 1) - (entry.quantity ?? 1);
+              if (nextQty <= 0) {
+                next = next.filter((item) => item.id !== match.id);
+              } else {
+                next[index] = withCategory({ ...match, quantity: nextQty });
+              }
+              changed.push(match.name);
             }
-            const nextQty = (match.quantity ?? 1) - (entry.quantity ?? 1);
-            if (nextQty <= 0) {
-              await deleteItem(match.id);
-            } else {
-              await patchItem(match.id, { quantity: nextQty });
-            }
-            changed.push(match.name);
-          }
-          await refresh();
+            return sortItems(next);
+          })();
+          setItems(nextItems);
           const parts = [];
           if (changed.length) parts.push(`Updated ${changed.join(", ")}.`);
           if (missing.length) parts.push(`Could not find ${missing.join(", ")}.`);
@@ -267,23 +261,25 @@ export default function App() {
         }
 
         const matches = parsed.map((entry) => findByName(entry.name)).filter(Boolean);
-        for (const item of matches) {
-          await patchItem(item.id, { checked: true });
-        }
-        await refresh();
+        const matchIds = new Set(matches.map((item) => item.id));
+        setItems((prev) =>
+          sortItems(
+            prev.map((item) =>
+              matchIds.has(item.id) ? { ...item, checked: true } : item
+            )
+          )
+        );
         setStatus(
           matches.length
             ? `Checked off ${matches.map((item) => item.name).join(", ")}.`
             : `Could not find ${parsed.map((entry) => titleCase(entry.name)).join(", ")}.`
         );
         setTab("list");
-      } catch (err) {
-        setError(err.message);
       } finally {
         setBusy(false);
       }
     },
-    [findByName, refresh]
+    [findByName, items]
   );
 
   const { supported, listening, interim, toggle } = useSpeech(applyVoice);
