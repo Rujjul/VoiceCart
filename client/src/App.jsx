@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { addItem, deleteItem, getItems, getSuggestions, patchItem } from "./api.js";
-import { parseCommand } from "./parseCommand.js";
+import { parseCommand, parseItemPhrase } from "./parseCommand.js";
 import { useSpeech } from "./useSpeech.js";
 
 function sortItems(items) {
@@ -15,6 +15,12 @@ function titleCase(name) {
     .split(" ")
     .map((word) => (word ? word[0].toUpperCase() + word.slice(1) : word))
     .join(" ");
+}
+
+function formatEntry({ name, quantity, unit }) {
+  const qty = quantity ?? 1;
+  const label = unit && unit !== "pcs" ? `${qty} ${unit}` : String(qty);
+  return `${label} ${titleCase(name)}`;
 }
 
 export default function App() {
@@ -48,15 +54,21 @@ export default function App() {
   }, []);
 
   const handleAdd = useCallback(
-    async (name) => {
-      const trimmed = name.trim();
-      if (!trimmed) return;
+    async (name, options = {}) => {
+      const parsed = parseItemPhrase(name);
+      const itemName = (options.name ?? parsed.name).trim();
+      if (!itemName) return;
+      const quantity = options.quantity ?? parsed.quantity ?? 1;
+      const unit =
+        options.unit ?? (parsed.unitSpecified ? parsed.unit : undefined);
       setBusy(true);
       setError("");
       try {
-        await addItem(trimmed);
+        await addItem(itemName, { quantity, unit });
         await refresh();
-        setStatus(`Added ${titleCase(trimmed)}.`);
+        setStatus(
+          `Added ${formatEntry({ name: itemName, quantity, unit: unit || "pcs" })}.`
+        );
       } catch (err) {
         setError(err.message);
       } finally {
@@ -70,7 +82,7 @@ export default function App() {
     async (item) => {
       setError("");
       try {
-        await patchItem(item.id, !item.checked);
+        await patchItem(item.id, { checked: !item.checked });
         await refresh();
       } catch (err) {
         setError(err.message);
@@ -93,6 +105,25 @@ export default function App() {
     [refresh]
   );
 
+  const handleSetQuantity = useCallback(
+    async (item, nextQty) => {
+      const quantity = Number(nextQty);
+      setError("");
+      try {
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+          await deleteItem(item.id);
+          setStatus(`Removed ${item.name}.`);
+        } else {
+          await patchItem(item.id, { quantity });
+        }
+        await refresh();
+      } catch (err) {
+        setError(err.message);
+      }
+    },
+    [refresh]
+  );
+
   const findByName = useCallback(
     (name) =>
       items.find((item) => item.name.toLowerCase() === name.toLowerCase()),
@@ -101,8 +132,8 @@ export default function App() {
 
   const applyVoice = useCallback(
     async (transcript) => {
-      const { action, items: names } = parseCommand(transcript);
-      if (!names.length) {
+      const { action, items: parsed } = parseCommand(transcript);
+      if (!parsed.length) {
         setStatus(`Heard “${transcript}” — nothing to add.`);
         return;
       }
@@ -111,31 +142,51 @@ export default function App() {
       setError("");
       try {
         if (action === "add") {
-          await Promise.all(names.map((name) => addItem(name)));
+          for (const entry of parsed) {
+            await addItem(entry.name, {
+              quantity: entry.quantity ?? 1,
+              unit: entry.unitSpecified ? entry.unit : undefined,
+            });
+          }
           await refresh();
-          setStatus(`Added ${names.map(titleCase).join(", ")}.`);
+          setStatus(`Added ${parsed.map(formatEntry).join(", ")}.`);
           return;
         }
 
         if (action === "remove") {
-          const matches = names.map(findByName).filter(Boolean);
-          await Promise.all(matches.map((item) => deleteItem(item.id)));
+          const changed = [];
+          const missing = [];
+          for (const entry of parsed) {
+            const match = findByName(entry.name);
+            if (!match) {
+              missing.push(titleCase(entry.name));
+              continue;
+            }
+            const nextQty = (match.quantity ?? 1) - (entry.quantity ?? 1);
+            if (nextQty <= 0) {
+              await deleteItem(match.id);
+            } else {
+              await patchItem(match.id, { quantity: nextQty });
+            }
+            changed.push(match.name);
+          }
           await refresh();
-          setStatus(
-            matches.length
-              ? `Removed ${matches.map((item) => item.name).join(", ")}.`
-              : `Could not find ${names.map(titleCase).join(", ")}.`
-          );
+          const parts = [];
+          if (changed.length) parts.push(`Updated ${changed.join(", ")}.`);
+          if (missing.length) parts.push(`Could not find ${missing.join(", ")}.`);
+          setStatus(parts.join(" ") || "Nothing to remove.");
           return;
         }
 
-        const matches = names.map(findByName).filter(Boolean);
-        await Promise.all(matches.map((item) => patchItem(item.id, true)));
+        const matches = parsed.map((entry) => findByName(entry.name)).filter(Boolean);
+        for (const item of matches) {
+          await patchItem(item.id, { checked: true });
+        }
         await refresh();
         setStatus(
           matches.length
             ? `Checked off ${matches.map((item) => item.name).join(", ")}.`
-            : `Could not find ${names.map(titleCase).join(", ")}.`
+            : `Could not find ${parsed.map((entry) => titleCase(entry.name)).join(", ")}.`
         );
       } catch (err) {
         setError(err.message);
@@ -228,16 +279,29 @@ export default function App() {
                     checked={item.checked}
                     onChange={() => handleToggle(item)}
                   />
-                  <span>{item.name}</span>
+                  <span className="item-copy">
+                    <span className="item-name">
+                      {item.name}
+                      <span className="item-qty"> {item.quantity ?? 1}</span>
+                    </span>
+                    <span className="item-unit">{item.unit || "pcs"}</span>
+                  </span>
                 </label>
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => handleRemove(item)}
-                  aria-label={`Remove ${item.name}`}
-                >
-                  Remove
-                </button>
+                <div className="item-actions">
+                  <QtyControls
+                    quantity={item.quantity ?? 1}
+                    name={item.name}
+                    onChange={(qty) => handleSetQuantity(item, qty)}
+                  />
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => handleRemove(item)}
+                    aria-label={`Remove ${item.name}`}
+                  >
+                    Remove
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
@@ -259,8 +323,8 @@ export default function App() {
                     key={name}
                     type="button"
                     className={`pill ${added ? "added" : ""}`}
-                    disabled={busy || added}
-                    onClick={() => handleAdd(name)}
+                    disabled={busy}
+                    onClick={() => handleAdd(name, { quantity: 1 })}
                   >
                     {name}
                   </button>
@@ -270,6 +334,60 @@ export default function App() {
           </div>
         ))}
       </section>
+    </div>
+  );
+}
+
+function QtyControls({ quantity, name, onChange }) {
+  const [draft, setDraft] = useState(String(quantity));
+
+  useEffect(() => {
+    setDraft(String(quantity));
+  }, [quantity]);
+
+  const commit = () => {
+    const next = Number(draft);
+    if (!Number.isFinite(next) || next === quantity) {
+      setDraft(String(quantity));
+      return;
+    }
+    onChange(next);
+  };
+
+  return (
+    <div className="qty" aria-label={`Quantity for ${name}`}>
+      <button
+        type="button"
+        className="qty-btn"
+        onClick={() => onChange(quantity - 1)}
+        aria-label={`Decrease ${name}`}
+      >
+        −
+      </button>
+      <input
+        className="qty-input"
+        type="number"
+        min="0"
+        step="any"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            event.currentTarget.blur();
+          }
+        }}
+        aria-label={`${name} quantity`}
+      />
+      <button
+        type="button"
+        className="qty-btn"
+        onClick={() => onChange(quantity + 1)}
+        aria-label={`Increase ${name}`}
+      >
+        +
+      </button>
     </div>
   );
 }

@@ -15,17 +15,19 @@ export function getItems() {
   return request("/api/items");
 }
 
-export function addItem(name) {
+export function addItem(name, { quantity = 1, unit } = {}) {
+  const body = { name, quantity };
+  if (unit != null) body.unit = unit;
   return request("/api/items", {
     method: "POST",
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(body),
   });
 }
 
-export function patchItem(id, checked) {
+export function patchItem(id, fields) {
   return request(`/api/items/${id}`, {
     method: "PATCH",
-    body: JSON.stringify({ checked }),
+    body: JSON.stringify(fields),
   });
 }
 

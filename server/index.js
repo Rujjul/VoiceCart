@@ -12,11 +12,69 @@ const dataFile = join(dataDir, "list.json");
 const tmpFile = join(dataDir, "list.json.tmp");
 const PORT = process.env.PORT || 3001;
 
+const UNIT_ALIASES = {
+  kg: "kg",
+  kilo: "kg",
+  kilos: "kg",
+  kilogram: "kg",
+  kilograms: "kg",
+  g: "g",
+  gram: "g",
+  grams: "g",
+  litre: "litre",
+  litres: "litre",
+  liter: "litre",
+  liters: "litre",
+  l: "litre",
+  ml: "ml",
+  millilitre: "ml",
+  millilitres: "ml",
+  milliliter: "ml",
+  milliliters: "ml",
+  packet: "packet",
+  packets: "packet",
+  pack: "packet",
+  packs: "packet",
+  bottle: "bottle",
+  bottles: "bottle",
+  box: "box",
+  boxes: "box",
+  dozen: "dozen",
+  dozens: "dozen",
+  piece: "piece",
+  pieces: "piece",
+  pcs: "pcs",
+  pc: "pcs",
+};
+
+function normalizeName(name) {
+  return String(name ?? "").trim().replace(/\s+/g, " ");
+}
+
+function normalizeUnit(unit) {
+  const key = String(unit ?? "").trim().toLowerCase();
+  return UNIT_ALIASES[key] || "pcs";
+}
+
+function parseQuantity(value, fallback = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
+
+function hydrate(item) {
+  return {
+    ...item,
+    quantity: parseQuantity(item.quantity, 1),
+    unit: item.unit ? normalizeUnit(item.unit) : "pcs",
+  };
+}
+
 async function loadItems() {
   try {
     const raw = await readFile(dataFile, "utf8");
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.map(hydrate) : [];
   } catch {
     return [];
   }
@@ -32,10 +90,6 @@ async function saveItems(items) {
     if (err.code !== "ENOENT") throw err;
   }
   await rename(tmpFile, dataFile);
-}
-
-function normalizeName(name) {
-  return String(name ?? "").trim().replace(/\s+/g, " ");
 }
 
 const app = express();
@@ -54,11 +108,17 @@ app.post("/api/items", async (req, res) => {
     return;
   }
 
+  const delta = parseQuantity(req.body?.quantity, 1);
+  const hasUnit = Object.prototype.hasOwnProperty.call(req.body ?? {}, "unit");
   const items = await loadItems();
   const existing = items.find(
     (item) => item.name.toLowerCase() === name.toLowerCase()
   );
+
   if (existing) {
+    existing.quantity = parseQuantity(existing.quantity, 1) + delta;
+    if (hasUnit) existing.unit = normalizeUnit(req.body.unit);
+    await saveItems(items);
     res.json(existing);
     return;
   }
@@ -66,6 +126,8 @@ app.post("/api/items", async (req, res) => {
   const item = {
     id: randomUUID(),
     name,
+    quantity: delta,
+    unit: hasUnit ? normalizeUnit(req.body.unit) : "pcs",
     checked: false,
     createdAt: new Date().toISOString(),
   };
@@ -84,6 +146,21 @@ app.patch("/api/items/:id", async (req, res) => {
 
   if (typeof req.body?.checked === "boolean") {
     item.checked = req.body.checked;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body ?? {}, "unit")) {
+    item.unit = normalizeUnit(req.body.unit);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body ?? {}, "quantity")) {
+    const nextQty = Number(req.body.quantity);
+    if (!Number.isFinite(nextQty) || nextQty <= 0) {
+      const remaining = items.filter((entry) => entry.id !== item.id);
+      await saveItems(remaining);
+      res.status(204).end();
+      return;
+    }
+    item.quantity = nextQty;
   }
 
   await saveItems(items);
