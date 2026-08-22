@@ -1,6 +1,6 @@
 # VoiceCart
 
-Voice-first shopping list. Add, update, check off, and remove items by speaking naturally — or type when you prefer.
+Voice-first shopping list. Add, update, check off, and remove items by speaking naturally or type when you prefer.
 
 **Live demo:** [voicecart.up.railway.app](https://voicecart.up.railway.app)
 
