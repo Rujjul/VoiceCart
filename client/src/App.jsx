@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSuggestions } from "./api.js";
 import { CATEGORIES, categoryMeta, categoryOf } from "./categories.js";
+import { loadHistory, recommendFromHistory, recordPurchases } from "./history.js";
 import { looksLikePhrase, parseItemPhrase, parseShoppingCommand, titleCase } from "./parseCommand.js";
 import { displayUnit } from "./units.js";
 import { useSpeech } from "./useSpeech.js";
@@ -45,6 +46,7 @@ function createItem(name, { quantity = 1, unit = "pcs" } = {}) {
 
 export default function App() {
   const [items, setItems] = useState([]);
+  const [history, setHistory] = useState(() => loadHistory());
   const [suggestions, setSuggestions] = useState([]);
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("list");
@@ -73,6 +75,10 @@ export default function App() {
       items.find((item) => item.name.toLowerCase() === name.toLowerCase()),
     [items]
   );
+
+  const rememberPurchases = useCallback((names) => {
+    setHistory((prev) => recordPurchases(prev, names));
+  }, []);
 
   const handleAdd = useCallback(
     async (name, options = {}) => {
@@ -111,6 +117,7 @@ export default function App() {
             createItem(itemName, { quantity, unit: unit || parsed.unit }),
           ]);
         });
+        rememberPurchases([itemName]);
         setStatus(
           `Added ${formatEntry({ name: itemName, quantity, unit: unit || parsed.unit })}.`
         );
@@ -119,7 +126,7 @@ export default function App() {
         setBusy(false);
       }
     },
-    [findByName]
+    [findByName, rememberPurchases]
   );
 
   const handleToggle = useCallback((item) => {
@@ -193,6 +200,7 @@ export default function App() {
             }
             return sortItems(next);
           });
+          rememberPurchases(parsed.map((entry) => entry.name));
           setStatus(`Added ${parsed.map(formatEntry).join(", ")}.`);
           setTab("list");
           return;
@@ -222,6 +230,10 @@ export default function App() {
             }
             return sortItems(next);
           });
+          const created = parsed
+            .filter((entry) => !findByName(entry.name))
+            .map((entry) => entry.name);
+          if (created.length) rememberPurchases(created);
           setStatus(`Updated ${parsed.map(formatEntry).join(", ")}.`);
           setTab("list");
           return;
@@ -279,7 +291,7 @@ export default function App() {
         setBusy(false);
       }
     },
-    [findByName, items]
+    [findByName, items, rememberPurchases]
   );
 
   const { supported, listening, interim, toggle } = useSpeech(applyVoice);
@@ -319,6 +331,10 @@ export default function App() {
   }, [items]);
 
   const listedIds = new Set(items.map((item) => item.name.toLowerCase()));
+  const recommendations = useMemo(
+    () => recommendFromHistory(history, items.map((item) => item.name), 5),
+    [history, items]
+  );
   const smartCount = suggestions.reduce((sum, group) => sum + group.items.length, 0);
 
   const onSearchSubmit = async (event) => {
@@ -515,6 +531,27 @@ export default function App() {
               </div>
             ))
           )}
+          {recommendations.length ? (
+            <section className="recommended" aria-label="Recommended for You">
+              <h2 className="cat-head">
+                Recommended for You
+                <i />
+              </h2>
+              <div className="pills">
+                {recommendations.map((entry) => (
+                  <button
+                    key={entry.name}
+                    type="button"
+                    className="pill rec-pill"
+                    disabled={busy}
+                    onClick={() => handleAdd(entry.name, { quantity: 1 })}
+                  >
+                    {entry.name}
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
         </section>
       )}
     </div>

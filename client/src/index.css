@@ -273,6 +273,20 @@ button {
   margin-top: 10px;
 }
 
+.recommended {
+  margin-top: 28px;
+}
+
+.rec-pill {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.rec-pill:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: #cfe6e4;
+}
+
 .group {
   margin-top: 22px;
 }
